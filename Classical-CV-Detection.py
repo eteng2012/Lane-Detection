@@ -64,14 +64,42 @@ def img_pipeline(image):
         (image.shape[1], image.shape[0]),
     ]
 
+    # Extract only yellow and white pixels to isolate lanes
+
+    # To separate brightness and color values, convert to HSV
+    hsv_img = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+    # Define range for white and yellow masks, from lowest value for each to highest
+    # Input values for HSV scaled to 255
+    lower_white = np.array([0,0,200]) # Gray (0, 0%, 80%)
+    upper_white = np.array([255,25,255]) # Gray (360, 10%, 100%)
+    lower_yellow = np.array([42,77,77]) # Blackish Orange (30, 30%, 30%)
+    upper_yellow = np.array([127,255,255]) # Bright Lime Green (90, 100%, 100%)
+
+    # Threshold the HSV image to get only blue colors
+    # cv2.inRange sets all pixels with color in range to white, else black
+    yellow_mask = cv2.inRange(hsv_img, lower_yellow, upper_yellow)
+    white_mask = cv2.inRange(hsv_img, lower_white, upper_white)
+
+    # cv2.bitwise_or sets mask for all yellow and white pixels
+    mask = cv2.bitwise_or(yellow_mask, white_mask)
+
+    # Bitwise-AND mask the original image
+    color_filtered = cv2.bitwise_and(image, image, mask=mask)
+
     # Convert to grayscale for simpler gradient detection
-    gray_img = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    gray_img = cv2.cvtColor(color_filtered, cv2.COLOR_RGB2GRAY)
+    
+    # Apply Gaussian Blur to decrease jittering and make lines from one frame to next smoother
+    kernel_size = 5
+    # kernel_size is strength of blur, 0 tells OpenCV to calculate the standard deviation in X direction
+    blur_img = cv2.GaussianBlur(gray_img,(kernel_size, kernel_size),0)
 
     # Canny detects strong color function gradient with intensity threshold parameters
     # Threshold parameters to decide how strong gradient counts as edge
     # Two thresholds, one in which below = not edge, one in which above = definitely edge
     # In between, only counts as edge if connected to something above top threshold (area bleeds in)
-    canny_img = cv2.Canny(gray_img, 50, 150)
+    canny_img = cv2.Canny(blur_img, 50, 150)
 
     # Run cropping to get bottom triangle
     cropped_img = crop_extra(
@@ -98,18 +126,14 @@ def img_pipeline(image):
     # Uses those row/theta to make line, the peak intersections of the lines makes the edges
 
     lines = cv2.HoughLinesP(
-        cropped_img, #image being performed on
-        rho = 3, #distance resolution/precision
-        theta = np.pi / 60, #angle resolution/precision
-        threshold = 160, #min threshold (votes in Hough Space) needed to detect line
+        cropped_img, #image being performedx on
+        rho = 2, #distance resolution/precision
+        theta = np.pi / 180, #angle resolution/precision
+        threshold = 30, #min threshold (votes in Hough Space) needed to detect line
         lines = np.array([]), #storage of detected lines
-        minLineLength = 40, #Shorter lines discarded
-        maxLineGap = 25 #If gap between lines larger, considered separate lines
+        minLineLength = 20, #Shorter lines discarded
+        maxLineGap = 1 #If gap between lines larger, considered separate lines
     )
-
-    # If empty, do not modify image, return
-    if (len(lines) == 0):
-        return image
 
     # Group detected lines into left lane and right lane, filter lines not moving toward horizon
     left_x_coord = []
@@ -134,30 +158,53 @@ def img_pipeline(image):
     min_y = int(0.6 * image.shape[0]) # Horizon cutoff of image
     max_y = image.shape[0] # Bottom of image
 
+    has_lines = True
+
     # If empty, do not modify image, return
     if (len(left_x_coord) == 0 or len(right_x_coord) == 0):
-        return image
+        has_lines = False #do not add new entry to history
 
     # poly1d/Polynomial makes polynomial of 1 degree, linear, using given coefficients
     # polyfit returns coefficients of polynomal of given degree that best fits data
 
     # Calculates polynomial with lines, then draws straight line using min_y/max_y
     from numpy.polynomial import Polynomial
+    if has_lines:
+        poly_left = Polynomial(np.flip(np.polyfit(
+            left_y_coord,
+            left_x_coord,
+            deg=1
+        )))
+        left_x_start = int(poly_left(max_y))
+        left_x_end = int(poly_left(min_y))
+        poly_right = Polynomial(np.flip(np.polyfit(
+            right_y_coord,
+            right_x_coord,
+            deg=1
+        )))
+        right_x_start = int(poly_right(max_y))
+        right_x_end = int(poly_right(min_y))
 
-    poly_left = Polynomial(np.flip(np.polyfit(
-        left_y_coord,
-        left_x_coord,
-        deg=1
-    )))
-    left_x_start = int(poly_left(max_y))
-    left_x_end = int(poly_left(min_y))
-    poly_right = Polynomial(np.flip(np.polyfit(
-        right_y_coord,
-        right_x_coord,
-        deg=1
-    )))
-    right_x_start = int(poly_right(max_y))
-    right_x_end = int(poly_right(min_y))
+    # Save History to decrease jitter
+    history = np.array([[0, 0, 0, 0]])
+    num_frames = 15
+    if has_lines:
+        new_entry = [left_x_start, left_x_end, right_x_start, right_x_end]
+        # If first frame, make new history, else add to old
+        if (history.shape[0] == 1): 
+            history = new_entry
+            for i in range(num_frames):
+                history = np.vstack((history, new_entry))
+        else: 
+            # shift rows up
+            history[:-1,:] = history[1:]
+            # assign to last row
+            history[-1, :] = new_entry
+    # Calculate the smoothed line points
+    left_x_start = int(np.median(history[:,0]))
+    left_x_end = int(np.median(history[:,1]))
+    right_x_start = int(np.median(history[:,2]))
+    right_x_end = int(np.median(history[:,3]))
 
     # Draw lines onto image
     lane_detect_image = draw_lines(
@@ -169,6 +216,9 @@ def img_pipeline(image):
         thickness=5)
     
     return lane_detect_image
+
+# image = mpimg.imread("sample.jpg")
+# img_pipeline(image)
 
 from moviepy.editor import VideoFileClip
 from IPython.display import HTML
