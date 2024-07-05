@@ -224,7 +224,7 @@ from moviepy.editor import VideoFileClip
 from IPython.display import HTML
 
 
-input = 'sample.mp4' # input file location
+input = 'Classical-CV-Files/sample.mp4' # input file location
 input_clip = VideoFileClip(input) # makes video object, input file location
 output_clip = input_clip.fl_image(img_pipeline) # applies function to each frame
 output = 'output.mp4' # output file location
